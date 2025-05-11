@@ -285,7 +285,7 @@ async def transcribe_live_audio(seconds: int = Form(5), language: str = Form("yo
         logger.error(f"Live transcription error: {e}")
         raise HTTPException(status_code=500, detail=f"Live transcription failed: {str(e)}")
 
-def record_audio(duration=5, sample_rate=16000, channels=CHANNELS if PYAUDIO_AVAILABLE else 1, audio_format=FORMAT if PYAUDIO_AVAILABLE else None):
+def record_audio(duration=5, sample_rate=16000, channels=1, audio_format=None):
     """Record audio for N seconds, then return frames."""
     if not PYAUDIO_AVAILABLE:
         return None
@@ -297,8 +297,8 @@ def record_audio(duration=5, sample_rate=16000, channels=CHANNELS if PYAUDIO_AVA
         logger.info(f"Recording {duration} seconds of audio")
         p = pyaudio.PyAudio()
         chunk = CHUNK
-        stream = p.open(format=audio_format,
-                        channels=channels,
+        stream = p.open(format=FORMAT,
+                        channels=CHANNELS,
                         rate=sample_rate,
                         input=True,
                         frames_per_buffer=chunk)
@@ -330,7 +330,7 @@ async def health_check():
         status="healthy" if asr_pipe is not None else "loading" if model_loading else "not_loaded",
         model_loaded=asr_pipe is not None,
         device=DEVICE,
-        languages=["yo", "en", "ha"]  # List supported languages
+        languages=["yo", "en","ha"]  # List supported languages
     )
 
 @app.get("/supported_languages")
@@ -346,4 +346,5 @@ async def supported_languages():
     }
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=True)

@@ -2,8 +2,8 @@
 # Upgrade pip
 python -m pip install --upgrade pip
 
-# Install Python dependencies
+# Install Python dependencies only
 pip install -r requirements.txt
 
-# Install ffmpeg for audio processing
-apt-get update && apt-get install -y ffmpeg
+# Don't try to install system packages - Render handles this differently
+# apt-get update && apt-get install -y ffmpeg
