@@ -7,6 +7,8 @@ from pydantic import BaseModel
 import numpy as np
 import torch
 import pyaudio
+import librosa
+import soundfile as sf
 import wave
 import tempfile
 import os
@@ -29,11 +31,6 @@ logger = logging.getLogger(__name__)
 MODEL_PATH = "Saintdannyyy/kasayie-asr"
 SAMPLE_RATE = 16000
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-# Audio recording constants
-CHUNK = 1024
-FORMAT = pyaudio.paInt16
-CHANNELS = 1
 
 # Global variables
 asr_pipe = None
@@ -110,14 +107,13 @@ async def read_root(request: Request):
     """Render the main frontend page."""
     return templates.TemplateResponse("index.html", {"request": request})
 
-@app.post("/transcribe/", response_model=TranscriptionResponse)
-async def transcribe_audio(file: UploadFile = File(...), language: str = Form("yo")):
+@app.post("/transcribe/")
+async def transcribe(file: UploadFile = File(...)):
     """
-    Transcribe uploaded audio file.
+    Transcribe uploaded audio file using librosa.
     
     Args:
         file: The audio file to transcribe
-        language: Language code for transcription (default: yo for Yoruba)
     
     Returns:
         TranscriptionResponse with the transcribed text
@@ -131,78 +127,21 @@ async def transcribe_audio(file: UploadFile = File(...), language: str = Form("y
             raise HTTPException(status_code=503, detail="ASR model not loaded")
     
     try:
-        start_time = time.time()
+        # Save the uploaded file
+        file_location = f"temp_{file.filename}"
+        with open(file_location, "wb+") as file_object:
+            file_object.write(await file.read())
         
-        # Check file size (10MB limit)
-        file_size = 0
-        file_content = await file.read()
-        file_size = len(file_content)
-        if file_size > 10 * 1024 * 1024:  # 10MB
-            raise HTTPException(status_code=413, detail="Audio file too large (max 10MB)")
+        # Process with librosa
+        audio, sr = librosa.load(file_location, sr=SAMPLE_RATE)
         
-        # Save to temporary file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
-            temp_file.write(file_content)
-            temp_path = temp_file.name
+        # Use the ASR model
+        result = asr_pipe({"array": audio, "sampling_rate": sr})
         
-        try:
-            # For WAV files, convert to numpy array
-            try:
-                with wave.open(temp_path, 'rb') as wav_file:
-                    # Check audio parameters
-                    channels = wav_file.getnchannels()
-                    sample_width = wav_file.getsampwidth()
-                    framerate = wav_file.getframerate()
-                    
-                    logger.info(f"Audio file parameters: channels={channels}, sample_width={sample_width}, framerate={framerate}")
-                    
-                    frames = wav_file.readframes(wav_file.getnframes())
-                    audio_np = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-                    
-                    # Resample if needed (basic resampling - for production you might want a better library)
-                    if framerate != SAMPLE_RATE:
-                        logger.warning(f"Resampling from {framerate} to {SAMPLE_RATE}")
-                        # This is a very basic resampling method - consider librosa for better quality
-                        target_length = int(len(audio_np) * SAMPLE_RATE / framerate)
-                        audio_np = np.interp(
-                            np.linspace(0, len(audio_np), target_length), 
-                            np.arange(len(audio_np)), 
-                            audio_np
-                        )
-            except Exception as e:
-                # If WAV parsing failed, try to treat as another format (will need additional libraries)
-                logger.error(f"Error parsing WAV: {e}, file might not be in WAV format")
-                raise HTTPException(status_code=415, detail=f"Audio format error: {str(e)}. Please use WAV format.")
-            
-            # Run inference with timeout protection
-            try:
-                result = asr_pipe(
-                    {"raw": audio_np, "sampling_rate": SAMPLE_RATE}, 
-                    generate_kwargs={"language": language}
-                )
-                
-                transcription = result["text"].strip()
-                process_time = time.time() - start_time
-                
-                logger.info(f"Transcription successful: {transcription[:50]}...")
-                
-                return TranscriptionResponse(
-                    text=transcription,
-                    language=language,
-                    success=True,
-                    processing_time=round(process_time, 2)
-                )
-                
-            except Exception as e:
-                logger.error(f"Inference error: {e}")
-                raise HTTPException(status_code=500, detail=f"Transcription processing error: {str(e)}")
-                
-        finally:
-            # Clean up temporary file
-            try:
-                os.unlink(temp_path)
-            except Exception as e:
-                logger.error(f"Error removing temp file: {e}")
+        # Clean up
+        os.remove(file_location)
+        
+        return {"text": result["text"]}
     
     except HTTPException:
         raise
@@ -271,7 +210,7 @@ async def transcribe_live_audio(seconds: int = Form(5), language: str = Form("yo
         logger.error(f"Live transcription error: {e}")
         raise HTTPException(status_code=500, detail=f"Live transcription failed: {str(e)}")
 
-def record_audio(duration=5, sample_rate=16000, channels=CHANNELS, audio_format=FORMAT):
+def record_audio(duration=5, sample_rate=16000, channels=1, audio_format=pyaudio.paInt16):
     """Record audio for N seconds, then return frames."""
     p = None
     stream = None
@@ -279,7 +218,7 @@ def record_audio(duration=5, sample_rate=16000, channels=CHANNELS, audio_format=
     try:
         logger.info(f"Recording {duration} seconds of audio")
         p = pyaudio.PyAudio()
-        chunk = CHUNK
+        chunk = 1024
         stream = p.open(format=audio_format,
                         channels=channels,
                         rate=sample_rate,
