@@ -6,8 +6,6 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import numpy as np
 import torch
-import librosa
-import soundfile as sf
 import wave
 import tempfile
 import os
@@ -26,23 +24,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Model configuration
-MODEL_PATH = "Saintdannyyy/kasayie-asr"
+# Model configuration - Now using the Hugging Face model path
+MODEL_PATH = "Saintdannyyy/kasayie-asr"  # HuggingFace model ID
 SAMPLE_RATE = 16000
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-# Global variables
-asr_pipe = None
-model_loading = False
 
 # Try to import PyAudio, but continue if not available
 try:
     import pyaudio
     PYAUDIO_AVAILABLE = True
+    # Audio recording constants
+    CHUNK = 1024
+    FORMAT = pyaudio.paInt16
+    CHANNELS = 1
     logger.info("PyAudio is available - live recording enabled")
 except ImportError:
     PYAUDIO_AVAILABLE = False
     logger.warning("PyAudio not available - live recording will be disabled")
+
+# Global variables
+asr_pipe = None
+model_loading = False
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -52,7 +54,7 @@ async def lifespan(app: FastAPI):
     # Startup logic: Load the ASR model
     model_loading = True
     try:
-        logger.info(f"Loading ASR model from {MODEL_PATH}")
+        logger.info(f"Loading ASR model from HuggingFace: {MODEL_PATH}")
         logger.info(f"Using device: {DEVICE}")
         
         asr_pipe = pipeline(
@@ -115,14 +117,14 @@ async def read_root(request: Request):
     """Render the main frontend page."""
     return templates.TemplateResponse("index.html", {"request": request})
 
-@app.post("/transcribe/")
-async def transcribe(file: UploadFile = File(...), language: str = Form("yo")):
+@app.post("/transcribe/", response_model=TranscriptionResponse)
+async def transcribe_audio(file: UploadFile = File(...), language: str = Form("yo")):
     """
-    Transcribe uploaded audio file using librosa.
+    Transcribe uploaded audio file.
     
     Args:
         file: The audio file to transcribe
-        language: Language code for transcription
+        language: Language code for transcription (default: yo for Yoruba)
     
     Returns:
         TranscriptionResponse with the transcribed text
@@ -138,35 +140,76 @@ async def transcribe(file: UploadFile = File(...), language: str = Form("yo")):
     try:
         start_time = time.time()
         
-        # Save the uploaded file
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_file:
-            temp_file_path = temp_file.name
-            content = await file.read()
-            temp_file.write(content)
+        # Check file size (10MB limit)
+        file_size = 0
+        file_content = await file.read()
+        file_size = len(file_content)
+        if file_size > 10 * 1024 * 1024:  # 10MB
+            raise HTTPException(status_code=413, detail="Audio file too large (max 10MB)")
         
-        # Process with librosa
-        audio, sr = librosa.load(temp_file_path, sr=SAMPLE_RATE)
+        # Save to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
+            temp_file.write(file_content)
+            temp_path = temp_file.name
         
-        # Use the ASR model
-        result = asr_pipe(
-            {"array": audio, "sampling_rate": sr},
-            generate_kwargs={"language": language}
-        )
-        
-        # Clean up
-        os.unlink(temp_file_path)
-        
-        transcription = result["text"].strip()
-        process_time = time.time() - start_time
-        
-        logger.info(f"Transcription successful: {transcription[:50]}...")
-        
-        return TranscriptionResponse(
-            text=transcription,
-            language=language,
-            success=True,
-            processing_time=round(process_time, 2)
-        )
+        try:
+            # For WAV files, convert to numpy array
+            try:
+                with wave.open(temp_path, 'rb') as wav_file:
+                    # Check audio parameters
+                    channels = wav_file.getnchannels()
+                    sample_width = wav_file.getsampwidth()
+                    framerate = wav_file.getframerate()
+                    
+                    logger.info(f"Audio file parameters: channels={channels}, sample_width={sample_width}, framerate={framerate}")
+                    
+                    frames = wav_file.readframes(wav_file.getnframes())
+                    audio_np = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+                    
+                    # Resample if needed (basic resampling - for production you might want a better library)
+                    if framerate != SAMPLE_RATE:
+                        logger.warning(f"Resampling from {framerate} to {SAMPLE_RATE}")
+                        # This is a very basic resampling method - consider librosa for better quality
+                        target_length = int(len(audio_np) * SAMPLE_RATE / framerate)
+                        audio_np = np.interp(
+                            np.linspace(0, len(audio_np), target_length), 
+                            np.arange(len(audio_np)), 
+                            audio_np
+                        )
+            except Exception as e:
+                # If WAV parsing failed, try to treat as another format (will need additional libraries)
+                logger.error(f"Error parsing WAV: {e}, file might not be in WAV format")
+                raise HTTPException(status_code=415, detail=f"Audio format error: {str(e)}. Please use WAV format.")
+            
+            # Run inference with timeout protection
+            try:
+                result = asr_pipe(
+                    {"array": audio_np, "sampling_rate": SAMPLE_RATE}, 
+                    generate_kwargs={"language": language}
+                )
+                
+                transcription = result["text"].strip()
+                process_time = time.time() - start_time
+                
+                logger.info(f"Transcription successful: {transcription[:50]}...")
+                
+                return TranscriptionResponse(
+                    text=transcription,
+                    language=language,
+                    success=True,
+                    processing_time=round(process_time, 2)
+                )
+                
+            except Exception as e:
+                logger.error(f"Inference error: {e}")
+                raise HTTPException(status_code=500, detail=f"Transcription processing error: {str(e)}")
+                
+        finally:
+            # Clean up temporary file
+            try:
+                os.unlink(temp_path)
+            except Exception as e:
+                logger.error(f"Error removing temp file: {e}")
     
     except HTTPException:
         raise
@@ -242,7 +285,7 @@ async def transcribe_live_audio(seconds: int = Form(5), language: str = Form("yo
         logger.error(f"Live transcription error: {e}")
         raise HTTPException(status_code=500, detail=f"Live transcription failed: {str(e)}")
 
-def record_audio(duration=5, sample_rate=16000, channels=1, audio_format=pyaudio.paInt16):
+def record_audio(duration=5, sample_rate=16000, channels=CHANNELS if PYAUDIO_AVAILABLE else 1, audio_format=FORMAT if PYAUDIO_AVAILABLE else None):
     """Record audio for N seconds, then return frames."""
     if not PYAUDIO_AVAILABLE:
         return None
@@ -253,7 +296,7 @@ def record_audio(duration=5, sample_rate=16000, channels=1, audio_format=pyaudio
     try:
         logger.info(f"Recording {duration} seconds of audio")
         p = pyaudio.PyAudio()
-        chunk = 1024
+        chunk = CHUNK
         stream = p.open(format=audio_format,
                         channels=channels,
                         rate=sample_rate,
@@ -287,7 +330,7 @@ async def health_check():
         status="healthy" if asr_pipe is not None else "loading" if model_loading else "not_loaded",
         model_loaded=asr_pipe is not None,
         device=DEVICE,
-        languages=["yo", "en", "yo", "ha"]  # List supported languages
+        languages=["yo", "en", "ha"]  # List supported languages
     )
 
 @app.get("/supported_languages")
@@ -303,4 +346,4 @@ async def supported_languages():
     }
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)

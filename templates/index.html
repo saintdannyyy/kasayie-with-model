@@ -139,7 +139,7 @@
                         <select class="form-select" id="language" name="language">
                             <option value="yo" selected>Yoruba</option>
                             <option value="en">English</option>
-                            <option value="tw">Twi</option>
+                            <option value="yo">Twi</option>
                             <option value="ha">Hausa</option>
                         </select>
                     </div>
@@ -241,7 +241,7 @@
                 uploadSpinner.classList.remove('d-none');
 
                 try {
-                    const response = await fetch('http://localhost:8000/transcribe/', {
+                    const response = await fetch('/transcribe/', {
                         method: 'POST',
                         body: formData
                     });
@@ -304,7 +304,7 @@
                             formData.append('seconds', duration);
                             formData.append('language', language);
 
-                            const response = await fetch('http://localhost:8000/transcribe_live/', {
+                            const response = await fetch('/transcribe_live/', {
                                 method: 'POST',
                                 body: formData
                             });
