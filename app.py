@@ -6,7 +6,6 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import numpy as np
 import torch
-import pyaudio
 import librosa
 import soundfile as sf
 import wave
@@ -35,6 +34,15 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # Global variables
 asr_pipe = None
 model_loading = False
+
+# Try to import PyAudio, but continue if not available
+try:
+    import pyaudio
+    PYAUDIO_AVAILABLE = True
+    logger.info("PyAudio is available - live recording enabled")
+except ImportError:
+    PYAUDIO_AVAILABLE = False
+    logger.warning("PyAudio not available - live recording will be disabled")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -108,12 +116,13 @@ async def read_root(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 @app.post("/transcribe/")
-async def transcribe(file: UploadFile = File(...)):
+async def transcribe(file: UploadFile = File(...), language: str = Form("yo")):
     """
     Transcribe uploaded audio file using librosa.
     
     Args:
         file: The audio file to transcribe
+        language: Language code for transcription
     
     Returns:
         TranscriptionResponse with the transcribed text
@@ -127,21 +136,37 @@ async def transcribe(file: UploadFile = File(...)):
             raise HTTPException(status_code=503, detail="ASR model not loaded")
     
     try:
+        start_time = time.time()
+        
         # Save the uploaded file
-        file_location = f"temp_{file.filename}"
-        with open(file_location, "wb+") as file_object:
-            file_object.write(await file.read())
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.wav') as temp_file:
+            temp_file_path = temp_file.name
+            content = await file.read()
+            temp_file.write(content)
         
         # Process with librosa
-        audio, sr = librosa.load(file_location, sr=SAMPLE_RATE)
+        audio, sr = librosa.load(temp_file_path, sr=SAMPLE_RATE)
         
         # Use the ASR model
-        result = asr_pipe({"array": audio, "sampling_rate": sr})
+        result = asr_pipe(
+            {"array": audio, "sampling_rate": sr},
+            generate_kwargs={"language": language}
+        )
         
         # Clean up
-        os.remove(file_location)
+        os.unlink(temp_file_path)
         
-        return {"text": result["text"]}
+        transcription = result["text"].strip()
+        process_time = time.time() - start_time
+        
+        logger.info(f"Transcription successful: {transcription[:50]}...")
+        
+        return TranscriptionResponse(
+            text=transcription,
+            language=language,
+            success=True,
+            processing_time=round(process_time, 2)
+        )
     
     except HTTPException:
         raise
@@ -161,6 +186,13 @@ async def transcribe_live_audio(seconds: int = Form(5), language: str = Form("yo
     Returns:
         TranscriptionResponse with the transcribed text
     """
+    # Check if PyAudio is available
+    if not PYAUDIO_AVAILABLE:
+        raise HTTPException(
+            status_code=400, 
+            detail="Live recording is not available in this deployment. Please use the file upload method instead."
+        )
+    
     global asr_pipe
     
     if asr_pipe is None:
@@ -188,7 +220,7 @@ async def transcribe_live_audio(seconds: int = Form(5), language: str = Form("yo
         
         # Run inference
         result = asr_pipe(
-            {"raw": audio_np, "sampling_rate": SAMPLE_RATE},
+            {"array": audio_np, "sampling_rate": SAMPLE_RATE},
             generate_kwargs={"language": language}
         )
         
@@ -212,6 +244,9 @@ async def transcribe_live_audio(seconds: int = Form(5), language: str = Form("yo
 
 def record_audio(duration=5, sample_rate=16000, channels=1, audio_format=pyaudio.paInt16):
     """Record audio for N seconds, then return frames."""
+    if not PYAUDIO_AVAILABLE:
+        return None
+        
     p = None
     stream = None
     frames = []
@@ -252,7 +287,7 @@ async def health_check():
         status="healthy" if asr_pipe is not None else "loading" if model_loading else "not_loaded",
         model_loaded=asr_pipe is not None,
         device=DEVICE,
-        languages=["yo", "en", "tw", "ha"]  # List supported languages
+        languages=["yo", "en", "yo", "ha"]  # List supported languages
     )
 
 @app.get("/supported_languages")
@@ -262,7 +297,7 @@ async def supported_languages():
         "languages": [
             {"code": "yo", "name": "Yoruba"},
             {"code": "en", "name": "English"},
-            {"code": "tw", "name": "Twi"},
+            {"code": "yo", "name": "Twi"},
             {"code": "ha", "name": "Hausa"}
         ]
     }
