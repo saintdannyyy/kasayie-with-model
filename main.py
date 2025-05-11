@@ -26,7 +26,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Model configuration
-MODEL_PATH = "your-username/whisper-small-akan-non-standard"
+MODEL_PATH = "Saintdannyyy/kasayie-asr"
 SAMPLE_RATE = 16000
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -329,4 +329,4 @@ async def supported_languages():
     }
 
 if __name__ == "__main__":
-    uvicorn.run("app:main", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
