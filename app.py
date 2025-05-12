@@ -57,10 +57,12 @@ async def lifespan(app: FastAPI):
         logger.info(f"Loading ASR model from HuggingFace: {MODEL_PATH}")
         logger.info(f"Using device: {DEVICE}")
         
+        hf_token = os.environ.get("HF_TOKEN")
         asr_pipe = pipeline(
             "automatic-speech-recognition",
             model=MODEL_PATH,
-            device=DEVICE
+            device=DEVICE,
+            token=hf_token
         )
         logger.info("ASR model loaded successfully")
     except Exception as e:
