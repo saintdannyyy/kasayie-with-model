@@ -6,7 +6,6 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import numpy as np
 import torch
-import pyaudio
 import wave
 import tempfile
 import os
@@ -17,6 +16,23 @@ import time
 from pathlib import Path
 from transformers import pipeline
 from contextlib import asynccontextmanager
+
+# Try to import PyAudio, but continue if not available
+try:
+    import pyaudio
+    PYAUDIO_AVAILABLE = True
+    # Audio recording constants
+    CHUNK = 1024
+    FORMAT = pyaudio.paInt16
+    CHANNELS = 1
+    logger.info("PyAudio is available - live recording enabled")
+except ImportError:
+    PYAUDIO_AVAILABLE = False
+    logger.warning("PyAudio not available - live recording will be disabled")
+    # Define dummy values for constants
+    CHUNK = 1024
+    FORMAT = None
+    CHANNELS = 1
 
 # Configure logging
 logging.basicConfig(
@@ -29,11 +45,6 @@ logger = logging.getLogger(__name__)
 MODEL_PATH = r"./whisper-small_Akan_non_standardspeech"
 SAMPLE_RATE = 16000
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-# Audio recording constants
-CHUNK = 1024
-FORMAT = pyaudio.paInt16
-CHANNELS = 1
 
 # Global variables
 asr_pipe = None
@@ -223,6 +234,13 @@ async def transcribe_live_audio(seconds: int = Form(5), language: str = Form("yo
     Returns:
         TranscriptionResponse with the transcribed text
     """
+    # Check if PyAudio is available
+    if not PYAUDIO_AVAILABLE:
+        raise HTTPException(
+            status_code=400, 
+            detail="Live recording is not available in this deployment. Please use the file upload method instead."
+        )
+    
     global asr_pipe
     
     if asr_pipe is None:
@@ -274,6 +292,9 @@ async def transcribe_live_audio(seconds: int = Form(5), language: str = Form("yo
 
 def record_audio(duration=5, sample_rate=16000, channels=CHANNELS, audio_format=FORMAT):
     """Record audio for N seconds, then return frames."""
+    if not PYAUDIO_AVAILABLE:
+        return None
+
     p = None
     stream = None
     frames = []
