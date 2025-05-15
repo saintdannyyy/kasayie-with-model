@@ -6,6 +6,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 import numpy as np
 import torch
+import pyaudio
 import wave
 import tempfile
 import os
@@ -24,23 +25,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Model configuration - Now using the Hugging Face model path
-MODEL_PATH = "Saintdannyyy/kasayie-asr"  # HuggingFace model ID
+# Model configuration
+MODEL_PATH = r"./whisper-small_Akan_non_standardspeech"
 SAMPLE_RATE = 16000
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Try to import PyAudio, but continue if not available
-try:
-    import pyaudio
-    PYAUDIO_AVAILABLE = True
-    # Audio recording constants
-    CHUNK = 1024
-    FORMAT = pyaudio.paInt16
-    CHANNELS = 1
-    logger.info("PyAudio is available - live recording enabled")
-except ImportError:
-    PYAUDIO_AVAILABLE = False
-    logger.warning("PyAudio not available - live recording will be disabled")
+# Audio recording constants
+CHUNK = 1024
+FORMAT = pyaudio.paInt16
+CHANNELS = 1
 
 # Global variables
 asr_pipe = None
@@ -54,15 +47,14 @@ async def lifespan(app: FastAPI):
     # Startup logic: Load the ASR model
     model_loading = True
     try:
-        logger.info(f"Loading ASR model from HuggingFace: {MODEL_PATH}")
+        model_path = str(Path(MODEL_PATH).resolve())
+        logger.info(f"Loading ASR model from {model_path}")
         logger.info(f"Using device: {DEVICE}")
         
-        hf_token = os.environ.get("HF_TOKEN")
         asr_pipe = pipeline(
             "automatic-speech-recognition",
-            model=MODEL_PATH,
-            device=DEVICE,
-            token=hf_token
+            model=model_path,
+            device=DEVICE
         )
         logger.info("ASR model loaded successfully")
     except Exception as e:
@@ -186,7 +178,7 @@ async def transcribe_audio(file: UploadFile = File(...), language: str = Form("y
             # Run inference with timeout protection
             try:
                 result = asr_pipe(
-                    {"array": audio_np, "sampling_rate": SAMPLE_RATE}, 
+                    {"raw": audio_np, "sampling_rate": SAMPLE_RATE}, 
                     generate_kwargs={"language": language}
                 )
                 
@@ -231,13 +223,6 @@ async def transcribe_live_audio(seconds: int = Form(5), language: str = Form("yo
     Returns:
         TranscriptionResponse with the transcribed text
     """
-    # Check if PyAudio is available
-    if not PYAUDIO_AVAILABLE:
-        raise HTTPException(
-            status_code=400, 
-            detail="Live recording is not available in this deployment. Please use the file upload method instead."
-        )
-    
     global asr_pipe
     
     if asr_pipe is None:
@@ -265,7 +250,7 @@ async def transcribe_live_audio(seconds: int = Form(5), language: str = Form("yo
         
         # Run inference
         result = asr_pipe(
-            {"array": audio_np, "sampling_rate": SAMPLE_RATE},
+            {"raw": audio_np, "sampling_rate": SAMPLE_RATE},
             generate_kwargs={"language": language}
         )
         
@@ -287,11 +272,8 @@ async def transcribe_live_audio(seconds: int = Form(5), language: str = Form("yo
         logger.error(f"Live transcription error: {e}")
         raise HTTPException(status_code=500, detail=f"Live transcription failed: {str(e)}")
 
-def record_audio(duration=5, sample_rate=16000, channels=1, audio_format=None):
+def record_audio(duration=5, sample_rate=16000, channels=CHANNELS, audio_format=FORMAT):
     """Record audio for N seconds, then return frames."""
-    if not PYAUDIO_AVAILABLE:
-        return None
-        
     p = None
     stream = None
     frames = []
@@ -299,8 +281,8 @@ def record_audio(duration=5, sample_rate=16000, channels=1, audio_format=None):
         logger.info(f"Recording {duration} seconds of audio")
         p = pyaudio.PyAudio()
         chunk = CHUNK
-        stream = p.open(format=FORMAT,
-                        channels=CHANNELS,
+        stream = p.open(format=audio_format,
+                        channels=channels,
                         rate=sample_rate,
                         input=True,
                         frames_per_buffer=chunk)
@@ -348,5 +330,4 @@ async def supported_languages():
     }
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run("app:app", host="0.0.0.0", port=port, reload=True)
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True)
