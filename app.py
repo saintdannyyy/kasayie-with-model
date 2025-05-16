@@ -17,6 +17,13 @@ from pathlib import Path
 from transformers import pipeline
 from contextlib import asynccontextmanager
 
+# Configure logging first - before any logger is used
+logging.basicConfig(
+    level=logging.ERROR,  # Only show errors
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
 # Try to import PyAudio, but continue if not available
 try:
     import pyaudio
@@ -28,18 +35,11 @@ try:
     logger.info("PyAudio is available - live recording enabled")
 except ImportError:
     PYAUDIO_AVAILABLE = False
-    logger.warning("PyAudio not available - live recording will be disabled")
+    logger.error("PyAudio not available - live recording will be disabled")  # Changed to error as requested
     # Define dummy values for constants
     CHUNK = 1024
     FORMAT = None
     CHANNELS = 1
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, 
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
 
 # Model configuration
 MODEL_PATH = r"./whisper-small_Akan_non_standardspeech"
@@ -335,7 +335,7 @@ async def health_check():
         status="healthy" if asr_pipe is not None else "loading" if model_loading else "not_loaded",
         model_loaded=asr_pipe is not None,
         device=DEVICE,
-        languages=["yo", "en","ha"]  # List supported languages
+        languages=["yo"]  # Only include Yoruba code which is used for Twi/Akan
     )
 
 @app.get("/supported_languages")
@@ -343,10 +343,7 @@ async def supported_languages():
     """Return list of supported languages for the ASR model."""
     return {
         "languages": [
-            {"code": "yo", "name": "Yoruba"},
-            {"code": "en", "name": "English"},
-            {"code": "yo", "name": "Twi"},
-            {"code": "ha", "name": "Hausa"}
+            {"code": "yo", "name": "Akan"}  # Using "yo" code but labeled as Twi/Akan
         ]
     }
 
